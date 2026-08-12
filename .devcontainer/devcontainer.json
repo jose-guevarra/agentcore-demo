@@ -1,0 +1,37 @@
+{
+    "name": "AgentCore Demo DevContainers",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": "..",
+        "args": {
+            "REMOTE_USER": "${localEnv:USER}"
+        }
+    },
+    "remoteUser": "${localEnv:USER}",
+    //"workspaceMount": "source=projects,target=/workspaces,type=volume",   # use docker volume as destination
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/${localWorkspaceFolderBasename},type=bind",   
+    "workspaceFolder": "/workspace/${localWorkspaceFolderBasename}",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "eamodio.gitlens"
+            ],
+            "settings": {
+                "python.testing.pytestArgs": [
+                    "."
+                ],
+                "python.testing.unittestEnabled": false,
+                "python.testing.pytestEnabled": true,
+                "python.linting.enabled": true
+            }
+        }
+    },
+    "mounts": [
+        "source=${localEnv:HOME}/.aws,target=/home/${localEnv:USER}/.aws,type=bind,readonly",
+        "source=${localEnv:HOME}/.aws/sso,target=/home/${localEnv:USER}/.aws/sso,type=bind",
+        "source=${localEnv:HOME}/.aws/cli,target=/home/${localEnv:USER}/.aws/cli,type=bind"
+        //"source=${localEnv:HOME}/.netrc,target=/workspace/.netrc,type=bind,readonly"
+    ],
+    "postStartCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}"
+}
