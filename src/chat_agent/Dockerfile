@@ -18,4 +18,4 @@ EXPOSE 8080
 ENV PYTHONUNBUFFERED=1
 
 # Run the application
-CMD ["opentelemetry-instrument", "python", "app.py"]
+CMD ["opentelemetry-instrument", "python", "chat_agent.py"]
