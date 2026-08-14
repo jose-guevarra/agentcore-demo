@@ -9,6 +9,14 @@ terraform {
       source  = "hashicorp/awscc"
       version = ">= 1.68.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.6.0"
+    }
+    time = {
+      source  = "hashicorp/time"
+      version = ">= 0.13.0"
+    }
   }
 }
 

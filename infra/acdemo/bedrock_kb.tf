@@ -1,3 +1,23 @@
+# S3 bucket names must be globally unique. The account ID is the preferred
+# suffix (stable, human-traceable, and already available here since other
+# resources in this stack depend on data.aws_caller_identity.current). If
+# that data source ever comes back empty -- e.g. a caller identity call that
+# succeeds but returns no account ID -- fall back to a random hex suffix
+# instead of a name collision. random_id has no AWS dependency of its own,
+# and once created its value is fixed in state, so bucket names stay stable
+# across applies either way.
+resource "random_id" "bucket_suffix" {
+  byte_length = 4
+}
+
+locals {
+  bucket_unique_suffix = (
+    data.aws_caller_identity.current.account_id != "" ?
+    data.aws_caller_identity.current.account_id :
+    random_id.bucket_suffix.hex
+  )
+}
+
 resource "aws_iam_role" "bedrock_kb_role" {
   name        = "AmazonBedrockExecutionRoleForKnowledgeBase_acdemo-dev"
   description = "Role for the Amazon Bedrock Knowledge Base: acdemo-dev-knowledge-base"
@@ -42,7 +62,7 @@ resource "aws_iam_policy" "bedrock_kb_policy" {
           "s3:PutObject"
         ]
         Effect   = "Allow"
-        Resource = [var.data_source_bucket_arn, "${var.data_source_bucket_arn}/*", "${aws_s3_bucket.multimodal_output_bucket.arn}", "${aws_s3_bucket.multimodal_output_bucket.arn}/*"]
+        Resource = [aws_s3_bucket.kb_data_source_bucket.arn, "${aws_s3_bucket.kb_data_source_bucket.arn}/*", aws_s3_bucket.multimodal_output_bucket.arn, "${aws_s3_bucket.multimodal_output_bucket.arn}/*"]
       },
       {
         Sid = "BedrockKBFoundationModelAccess"
@@ -97,6 +117,19 @@ resource "aws_iam_role_policy_attachment" "bedrock_kb_policy_attachment" {
   policy_arn = aws_iam_policy.bedrock_kb_policy.arn
 }
 
+# CreateKnowledgeBase checks bucket access on the role immediately, and
+# nothing in aws_bedrockagent_knowledge_base's arguments references the
+# policy/attachment (only role_arn, which doesn't change when the policy
+# document does) -- so Terraform has no natural ordering forcing the
+# attachment to land, propagate through IAM, and be visible to Bedrock
+# before creation is attempted. The explicit depends_on plus a short wait
+# below fixes that; without both, KB (re)creation right after a bucket
+# rename can 400 with "IAM role doesn't have access to the specified bucket".
+resource "time_sleep" "bedrock_kb_role_propagation" {
+  depends_on      = [aws_iam_role_policy_attachment.bedrock_kb_policy_attachment]
+  create_duration = "20s"
+}
+
 resource "aws_s3vectors_vector_bucket" "vector_bucket" {
   vector_bucket_name = "acdemo-dev-vector-bucket"
 }
@@ -118,17 +151,18 @@ resource "aws_s3vectors_index" "vector_index" {
 }
 
 resource "aws_s3_bucket" "multimodal_output_bucket" {
-  bucket        = "acdemo-dev-multimodal-output-bucketjg"
+  bucket        = "acdemo-dev-multimodal-output-bucket-${local.bucket_unique_suffix}"
   force_destroy = true
 }
 
 resource "aws_s3_bucket" "kb_data_source_bucket" {
-  bucket        = "acdemo-dev-source-bucket"
+  bucket        = "acdemo-dev-source-bucket-${local.bucket_unique_suffix}"
   force_destroy = true
 }
 
 
 resource "aws_bedrockagent_knowledge_base" "knowledge_base" {
+  depends_on  = [time_sleep.bedrock_kb_role_propagation]
   name        = "acdemo-dev-knowledge-base"
   description = "Test knowledge base for acdemo"
   role_arn    = aws_iam_role.bedrock_kb_role.arn
@@ -168,7 +202,7 @@ resource "awscc_bedrock_data_source" "s3_data_source" {
   description       = "Data source for the Amazon Bedrock Knowledge Base: acdemo-dev-knowledge-base from S3 with semantic chunking"
   data_source_configuration = {
     s3_configuration = {
-      bucket_arn         = var.data_source_bucket_arn
+      bucket_arn         = aws_s3_bucket.kb_data_source_bucket.arn
       inclusion_prefixes = ["embeddings/"]
     }
     type = "S3"

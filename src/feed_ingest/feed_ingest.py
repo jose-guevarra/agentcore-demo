@@ -32,8 +32,12 @@ s3_client = boto3.client(service_name="s3", region_name=REGION)
 MODEL_ID = "amazon.nova-lite-v1:0"  # Or use "amazon.nova-pro-v1:0" depending on complexity
 
 # Defaults, overridable per-invocation via the event or environment variables
-LOOKBACK_HOURS =48 
-MAX_ENTRIES = 5
+LOOKBACK_HOURS = 48 
+MAX_ENTRIES = 10
+# Bucket name is account-suffixed by Terraform for S3 global-uniqueness (see
+# infra/acdemo/bedrock_kb.tf); the deployed Lambda always gets the real name
+# via the DEST_BUCKET env var, so this constant only matters as a fallback
+# for ad hoc local/manual invocation and won't match production out of the box.
 DEST_BUCKET = "acdemo-dev-source-bucket"
 DEST_PREFIX = "embeddings/"
 STATE_PREFIX = "state/"

@@ -18,11 +18,6 @@ variable "profile" {
   default     = ""
 }
 
-variable "data_source_bucket_arn" {
-  type        = string
-  description = "The ARN of the S3 bucket to source the knowledge base"
-}
-
 variable "ecr_repository_name" {
   type        = string
   description = "The name of the ECR repository to store the agent code"
