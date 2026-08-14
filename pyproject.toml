@@ -21,4 +21,5 @@ dev = [
 [tool.uv.workspace]
 members = [
     "src/chat_agent",
+    "webapp",
 ]
