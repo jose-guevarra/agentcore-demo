@@ -9,6 +9,8 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "feedparser>=6.0.14",
+    "requests>=2.32",
+    "beautifulsoup4>=4.13",
 ]
 
 [dependency-groups]

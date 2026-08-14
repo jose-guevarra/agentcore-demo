@@ -1,6 +1,11 @@
 
 infra/acdemo/tools/.env.*
 
+src/feed_ingest/dist
+src/feed_ingest/feed_ingest.zip
+src/feed_ingest/feed_ingest_scheduler.zip
+
+src/feed_ingest/dist_scheduler
 
 tools/.env.*
 
