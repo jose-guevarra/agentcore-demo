@@ -32,7 +32,7 @@ s3_client = boto3.client(service_name="s3", region_name=REGION)
 MODEL_ID = "amazon.nova-lite-v1:0"  # Or use "amazon.nova-pro-v1:0" depending on complexity
 
 # Defaults, overridable per-invocation via the event or environment variables
-LOOKBACK_HOURS = 24
+LOOKBACK_HOURS =48 
 MAX_ENTRIES = 5
 DEST_BUCKET = "acdemo-dev-source-bucket"
 DEST_PREFIX = "embeddings/"

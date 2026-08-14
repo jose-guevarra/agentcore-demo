@@ -124,7 +124,7 @@ def interpret_invocation(raw_payload, function_error):
 
 def invoke_row(config, row):
     """Invoke feed_ingest.py for one (team, url) row. Never raises -- failures are recorded."""
-    team, url, source = row.get("team"), row.get("url"), row.get("source")
+    team, url, source = row.get("team_name"), row.get("url"), row.get("source")
     payload = {"team_name": team, "rss_url": url, "source_site": source}
     for key in ("bucket", "prefix", "state_prefix"):
         if config.get(key):
