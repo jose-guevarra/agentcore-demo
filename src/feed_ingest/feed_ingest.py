@@ -255,36 +255,28 @@ def build_markdown(team_name, title, url, published, author, coverage, body_text
     return header + body_text.strip() + "\n"
 
 
-def build_metadata(
-    *, team_name, url, title, entry_id, published_date, published_timestamp, author,
-    coverage, relevance_reason, degraded, char_count, source_feed, source_site, ingested_at,
-):
+# Bedrock KB enforces a hard cap on sidecar .metadata.json size (observed as
+# "Ignored N files ... larger than service limit of MaximumFileSizeSupported:
+# 1024 bytes" in the data source sync warnings -- well under the 10 KB quoted
+# for the general S3 connector, at least for this S3-Vectors-backed KB). Only
+# keep the attributes actually used for filtering, and cap the unbounded ones
+# (title, url) defensively so a long headline/tracking-param URL can't blow
+# the budget: this shape stays under ~850 bytes even at those caps.
+TITLE_META_MAX_CHARS = 120
+URL_META_MAX_CHARS = 200
+
+
+def build_metadata(*, team_name, title, source, published_date, url):
     def s(value, embed):
         return {"value": {"type": "STRING", "stringValue": str(value)}, "includeForEmbedding": embed}
 
-    def n(value):
-        return {"value": {"type": "NUMBER", "numberValue": value}}
-
-    def b(value):
-        return {"value": {"type": "BOOLEAN", "booleanValue": bool(value)}}
-
     attrs = {
         "team_name": s(team_name, True),
-        "url": s(url, False),
-        "title": s(title, True),
-        "entry_id": s(entry_id, False),
-        "published_date": s(published_date, True),
-        "published_timestamp": n(published_timestamp),
-        "author": s(author or "Unknown", True),
-        "coverage": s(coverage, True),
-        "relevance_reason": s(relevance_reason, False),
-        "degraded": b(degraded),
-        "char_count": n(char_count),
-        "source_feed": s(source_feed, False),
-        "ingested_at": s(ingested_at, True),
+        "title": s(title[:TITLE_META_MAX_CHARS], True),
+        "source": s(source or "unknown", False),
+        "published_date": s(published_date, False),
+        "url": s(url[:URL_META_MAX_CHARS], False),
     }
-    if source_site:
-        attrs["source_site"] = s(source_site, True)
     return {"metadataAttributes": attrs}
 
 
@@ -397,10 +389,10 @@ def _run_ingest(config, run_at):
 
         try:
             article_text = fetch_article_text(url)
-            degraded = False
             if len(article_text) < DEGRADED_MIN_CHARS:
+                # Extraction likely hit a paywall/JS-only page; fall back to the
+                # feed's own summary rather than writing a near-empty document.
                 article_text = entry.get("summary", "") or article_text
-                degraded = True
         except Exception as e:  # noqa: BLE001 - per-article failure, recorded and skipped
             counts["fetch_errors"] += 1
             line.update(status="fetch_error", s3_key=None, reason=str(e))
@@ -429,19 +421,10 @@ def _run_ingest(config, run_at):
         markdown = build_markdown(team_name, title, url, published, author, coverage, body_text)
         metadata = build_metadata(
             team_name=team_name,
-            url=url,
             title=title,
-            entry_id=ekey,
+            source=config["source_site"],
             published_date=entry_time.strftime("%Y-%m-%d"),
-            published_timestamp=int(entry_time.timestamp()),
-            author=author,
-            coverage=coverage,
-            relevance_reason=classification["reason"],
-            degraded=degraded,
-            char_count=len(body_text),
-            source_feed=config["rss_url"],
-            source_site=config["source_site"],
-            ingested_at=run_at,
+            url=url,
         )
         put_document(config["bucket"], doc_key, markdown, metadata)
         mark_processed(config["bucket"], marker, relevance, url, doc_key)
