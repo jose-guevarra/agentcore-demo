@@ -9,6 +9,8 @@ admin-created users).
 
 from __future__ import annotations
 
+import base64
+import json
 import time
 from dataclasses import dataclass
 
@@ -18,6 +20,18 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from config import Config
+
+
+def _decode_id_token_claims(id_token: str) -> dict:
+    """Decode (without verifying) the claims in a Cognito ID token.
+
+    No signature check needed: this token came straight from Cognito over TLS
+    in the same call that authenticated the user, so there's no untrusted
+    party to verify it against.
+    """
+    payload_segment = id_token.split(".")[1]
+    padded = payload_segment + "=" * (-len(payload_segment) % 4)
+    return json.loads(base64.urlsafe_b64decode(padded))
 
 
 FRIENDLY_ERRORS = {
@@ -53,6 +67,11 @@ class Tokens:
     @property
     def expired(self) -> bool:
         return time.time() >= self.expires_at
+
+    @property
+    def sub(self) -> str:
+        """The Cognito user's stable subject id (the ID token's `sub` claim)."""
+        return _decode_id_token_claims(self.id_token)["sub"]
 
 
 def _client(config: Config):

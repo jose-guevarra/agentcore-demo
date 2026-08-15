@@ -1,5 +1,7 @@
 import os
 
+from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
+from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent
 from strands.memory import MemoryManager
@@ -7,8 +9,10 @@ from strands.vended_memory_stores.bedrock_knowledge_base import BedrockKnowledge
 
 app = BedrockAgentCoreApp()
 
-# Provisioned by infra/acdemo/agentcore_runtime.tf as a runtime environment variable.
+# Both provisioned by infra/acdemo/agentcore_runtime.tf as runtime environment variables.
 KNOWLEDGE_BASE_ID = os.environ.get("BEDROCK_KNOWLEDGE_BASE_ID")
+MEMORY_ID = os.environ.get("BEDROCK_MEMORY_ID")
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 
 def _build_memory_manager() -> MemoryManager | None:
@@ -47,19 +51,47 @@ def _build_memory_manager() -> MemoryManager | None:
 memory_manager = _build_memory_manager()
 
 
+def _build_session_manager(session_id: str) -> AgentCoreMemorySessionManager | None:
+    """Wire up cross-tab/cross-device conversation continuity via AgentCore Memory.
+
+    Unlike memory_manager above, this is inherently per-request: actor_id/
+    session_id vary per invocation, so (unlike the KB store) there's nothing
+    to usefully share across invocations here.
+    """
+    if not MEMORY_ID:
+        return None
+
+    return AgentCoreMemorySessionManager(
+        agentcore_memory_config=AgentCoreMemoryConfig(
+            memory_id=MEMORY_ID,
+            session_id=session_id,
+            # session_id is already webapp-<cognito sub> (see webapp/agent_client.py):
+            # one continuous thread per user, so actor_id and session_id coincide.
+            actor_id=session_id,
+            async_mode=True,  # we invoke via agent.stream_async() below
+        ),
+        region_name=AWS_REGION,
+    )
+
+
 @app.entrypoint
 async def invoke(payload, context):
     """Handler for agent invocation with streaming support"""
     session_id = context.session_id
     user_message = payload.get("prompt", "")
-    conversation_history = payload.get("conversation_history", [])
+    session_manager = _build_session_manager(session_id)
 
     agent = Agent(
         #model="us.anthropic.claude-sonnet-4-20250514-v1:0",
         model="amazon.nova-micro-v1:0",
         state={"session_id": session_id},
-        messages=conversation_history,
+        session_manager=session_manager,
         memory_manager=memory_manager,
+        # When memory is configured, session_manager's initialize() hook restores
+        # the full prior conversation into agent.messages -- passing history here
+        # too would be redundant. Fall back to the client-supplied history only
+        # when BEDROCK_MEMORY_ID isn't set, preserving prior behavior for local/dev.
+        messages=None if session_manager else payload.get("conversation_history", []),
     )
 
     async for event in agent.stream_async(user_message):

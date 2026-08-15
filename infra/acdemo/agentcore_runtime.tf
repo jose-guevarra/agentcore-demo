@@ -166,6 +166,16 @@ resource "aws_iam_policy" "agentcore_runtime_execution_policy" {
         ]
         Effect   = "Allow"
         Resource = ["arn:aws:s3:::*"]
+      },
+      {
+        Action = [
+          "bedrock-agentcore:CreateEvent",
+          "bedrock-agentcore:ListEvents",
+          "bedrock-agentcore:GetEvent",
+          "bedrock-agentcore:DeleteEvent"
+        ]
+        Effect   = "Allow"
+        Resource = [aws_bedrockagentcore_memory.chat_memory.arn]
       }
     ]
   })
@@ -174,6 +184,12 @@ resource "aws_iam_policy" "agentcore_runtime_execution_policy" {
 resource "aws_iam_role_policy_attachment" "agentcore_runtime_execution_policy_attachment" {
   role       = aws_iam_role.agentcore_runtime_role.name
   policy_arn = aws_iam_policy.agentcore_runtime_execution_policy.arn
+}
+
+resource "aws_bedrockagentcore_memory" "chat_memory" {
+  name                  = "acdemo_dev_chat_memory"
+  description           = "Short-term conversational memory for the acdemo-dev chat agent, keyed by user."
+  event_expiry_duration = 7 # days; provider enforces a 7-365 range (lowest it accepts)
 }
 
 
@@ -187,6 +203,7 @@ resource "aws_bedrockagentcore_agent_runtime" "agentcore_runtime" {
 
   environment_variables = {
     BEDROCK_KNOWLEDGE_BASE_ID = aws_bedrockagent_knowledge_base.knowledge_base.id
+    BEDROCK_MEMORY_ID         = aws_bedrockagentcore_memory.chat_memory.id
   }
 
   # Both fields are set explicitly (rather than only max_lifetime) to avoid a

@@ -16,7 +16,6 @@ raw Bedrock Converse stream event Strands also emits alongside it:
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Iterator
 
 import requests
@@ -32,9 +31,15 @@ class AgentInvocationError(Exception):
         self.status_code = status_code
 
 
-def new_session_id() -> str:
-    """A fresh AgentCore runtime session id, stable for one Streamlit session."""
-    return f"webapp-{uuid.uuid4()}"
+def session_id_for_user(sub: str) -> str:
+    """The AgentCore runtime session id for this user, tied to their Cognito `sub`.
+
+    Deterministic per user (not per login/browser tab), so requests from the
+    same person consistently land in the same AgentCore session. `sub` is a
+    36-char UUID, so the prefixed id comfortably meets AgentCore's 33-100
+    character session id requirement.
+    """
+    return f"webapp-{sub}"
 
 
 def to_content_blocks(text: str) -> list[dict]:

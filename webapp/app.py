@@ -18,7 +18,7 @@ def _init_state() -> None:
         "tokens": None,
         "username": None,
         "messages": [],  # [{"role": "user"|"assistant", "text": str}]
-        "session_id": agent_client.new_session_id(),
+        "session_id": None,  # set on login, tied to the user's Cognito sub
         "pending_challenge": None,  # (username, session) while NEW_PASSWORD_REQUIRED
     }
     for key, value in defaults.items():
@@ -52,6 +52,7 @@ def _render_login(config) -> None:
                 else:
                     st.session_state.tokens = tokens
                     st.session_state.username = username
+                    st.session_state.session_id = agent_client.session_id_for_user(tokens.sub)
                     st.session_state.authenticated = True
                     st.session_state.pending_challenge = None
                     st.rerun()
@@ -73,6 +74,7 @@ def _render_login(config) -> None:
         else:
             st.session_state.tokens = tokens
             st.session_state.username = username
+            st.session_state.session_id = agent_client.session_id_for_user(tokens.sub)
             st.session_state.authenticated = True
             st.rerun()
 
