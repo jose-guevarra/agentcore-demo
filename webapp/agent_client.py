@@ -16,6 +16,7 @@ raw Bedrock Converse stream event Strands also emits alongside it:
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Iterator
 
 import requests
@@ -162,9 +163,14 @@ def list_chats(config: Config, actor_id: str, access_token: str) -> list[dict]:
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        # Header is required by the invoke API but unused for this action;
-        # actor_id doubles as a harmless placeholder value.
-        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": actor_id,
+        # Header is required by the invoke API but unused by the list_sessions
+        # action -- it's a stateless read keyed entirely by the actor_id in the
+        # body, no Strands session/agent involved, so there's no reason for it
+        # to have a fixed identity. A random value per call means it can never
+        # collide with a real conversation's session_id, and -- unlike a fixed
+        # placeholder -- can never end up pinned to a stale pre-redeploy
+        # runtime instance and serve outdated results indefinitely.
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": f"{actor_id}-home-{uuid.uuid4().hex}",
     }
     return _post_json(config, headers, {"action": "list_sessions", "actor_id": actor_id}).get("sessions", [])
 

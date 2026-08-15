@@ -1,6 +1,7 @@
 import os
 
 from bedrock_agentcore.memory import MemorySessionManager
+from bedrock_agentcore.memory.integrations.strands.bedrock_converter import AgentCoreMemoryConverter
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -129,19 +130,38 @@ async def _stream_chat(payload, context):
         yield event
 
 
+def _text_from_message(message: dict) -> str:
+    """Join a Strands Message's text content blocks into a plain string
+    (skipping non-text blocks like toolUse/toolResult/image).
+    """
+    return "".join(block.get("text", "") for block in message.get("content") or [] if block.get("text"))
+
+
+def _session_messages(manager: MemorySessionManager, actor_id: str, session_id: str, max_results: int) -> list:
+    """Decode a session's raw AgentCore Memory events into Strands SessionMessages.
+
+    AgentCoreMemorySessionManager doesn't store plain text in the
+    conversational content.text field -- it JSON-encodes the whole
+    SessionMessage (role, content blocks, message_id, redact_message,
+    timestamps) there, meant to be read back exactly this way rather than
+    displayed directly. This mirrors AgentCoreMemorySessionManager's own
+    list_messages() (list_events + events_to_messages, in that order).
+    """
+    events = manager.list_events(actor_id, session_id, max_results=max_results, include_payload=True)
+    return AgentCoreMemoryConverter.events_to_messages(events)
+
+
 def _title_for_session(manager: MemorySessionManager, actor_id: str, session_id: str) -> str:
     """First user message of the session, truncated -- or a fallback for an
     empty chat. One list_events call per session (O(N) in a user's chat
     count); fine at demo scale.
     """
-    events = manager.list_events(actor_id, session_id, max_results=5, include_payload=True)
-    for event in events:
-        for item in event.get("payload") or []:
-            conversational = item.get("conversational")
-            if conversational and conversational.get("role") == "USER":
-                text = (conversational.get("content", {}).get("text") or "").strip()
-                if text:
-                    return text[:TITLE_MAX_CHARS] + ("…" if len(text) > TITLE_MAX_CHARS else "")
+    for session_message in _session_messages(manager, actor_id, session_id, max_results=100):
+        message = session_message.to_message()
+        if message.get("role") == "user":
+            text = _text_from_message(message).strip()
+            if text:
+                return text[:TITLE_MAX_CHARS] + ("…" if len(text) > TITLE_MAX_CHARS else "")
     return "New chat"
 
 
@@ -177,19 +197,15 @@ async def _list_messages(payload, context) -> dict:
     if manager is None or not actor_id:
         return {"messages": []}
 
-    events = manager.list_events(actor_id, session_id, max_results=200, include_payload=True)
     messages = []
-    for event in events:
-        for item in event.get("payload") or []:
-            conversational = item.get("conversational")
-            if not conversational:
-                continue  # skip blob payloads (agent state, oversized messages)
-            role = (conversational.get("role") or "").lower()
-            if role not in ("user", "assistant"):
-                continue  # skip TOOL/OTHER
-            text = conversational.get("content", {}).get("text", "")
-            if text:
-                messages.append({"role": role, "text": text})
+    for session_message in _session_messages(manager, actor_id, session_id, max_results=200):
+        message = session_message.to_message()
+        role = message.get("role", "")
+        if role not in ("user", "assistant"):
+            continue  # skip TOOL/OTHER
+        text = _text_from_message(message)
+        if text:
+            messages.append({"role": role, "text": text})
     return {"messages": messages}
 
 
