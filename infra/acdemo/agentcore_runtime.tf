@@ -189,6 +189,16 @@ resource "aws_bedrockagentcore_agent_runtime" "agentcore_runtime" {
     BEDROCK_KNOWLEDGE_BASE_ID = aws_bedrockagent_knowledge_base.knowledge_base.id
   }
 
+  # Both fields are set explicitly (rather than only max_lifetime) to avoid a
+  # known terraform-provider-aws issue where omitting one causes an
+  # "inconsistent result after apply" error once AWS computes its default.
+  # idle_runtime_session_timeout is left at AWS's own default (900s/15min);
+  # max_lifetime is capped to 1 hour so no runtime instance lives past that.
+  lifecycle_configuration = [{
+    idle_runtime_session_timeout = 900
+    max_lifetime                 = 3600
+  }]
+
   authorizer_configuration {
     custom_jwt_authorizer {
       discovery_url   = "https://cognito-idp.${var.region}.amazonaws.com/${aws_cognito_user_pool.userpool.id}/.well-known/openid-configuration"
