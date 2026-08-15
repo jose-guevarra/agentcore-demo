@@ -173,7 +173,8 @@ resource "aws_iam_policy" "agentcore_runtime_execution_policy" {
           "bedrock-agentcore:ListEvents",
           "bedrock-agentcore:GetEvent",
           "bedrock-agentcore:DeleteEvent",
-          "bedrock-agentcore:ListSessions"
+          "bedrock-agentcore:ListSessions",
+          "bedrock-agentcore:RetrieveMemoryRecords"
         ]
         Effect   = "Allow"
         Resource = [aws_bedrockagentcore_memory.chat_memory.arn]
@@ -191,6 +192,18 @@ resource "aws_bedrockagentcore_memory" "chat_memory" {
   name                  = "acdemo_dev_chat_memory"
   description           = "Short-term conversational memory for the acdemo-dev chat agent, keyed by user."
   event_expiry_duration = 7 # days; provider enforces a 7-365 range (lowest it accepts)
+}
+
+resource "aws_bedrockagentcore_memory_strategy" "user_preferences" {
+  memory_id   = aws_bedrockagentcore_memory.chat_memory.id
+  name        = "UserPreferences"
+  type        = "USER_PREFERENCE"
+  description = "Durable user facts/preferences (favorite team, favorite player, etc.) extracted from chat."
+
+  # Actor-scoped, not tied to this strategy's AWS-generated ID -- src/chat_agent/chat_agent.py's
+  # PREFERENCE_NAMESPACE constant must match this template exactly, since retrieval resolves the
+  # same {actorId} placeholder client-side to look records back up.
+  namespace_templates = ["/preferences/{actorId}/"]
 }
 
 

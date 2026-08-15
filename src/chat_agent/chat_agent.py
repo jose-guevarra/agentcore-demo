@@ -2,7 +2,7 @@ import os
 
 from bedrock_agentcore.memory import MemorySessionManager
 from bedrock_agentcore.memory.integrations.strands.bedrock_converter import AgentCoreMemoryConverter
-from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
+from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig, RetrievalConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands import Agent
@@ -16,6 +16,16 @@ KNOWLEDGE_BASE_ID = os.environ.get("BEDROCK_KNOWLEDGE_BASE_ID")
 MEMORY_ID = os.environ.get("BEDROCK_MEMORY_ID")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 TITLE_MAX_CHARS = 60
+
+# Must match infra/acdemo/agentcore_runtime.tf's aws_bedrockagentcore_memory_strategy.user_preferences
+# namespace_templates -- extraction writes records here, retrieval below reads them back out.
+PREFERENCE_NAMESPACE = "/preferences/{actorId}/"
+
+SYSTEM_PROMPT = (
+    "If the user's message is preceded by a <user_context> block, treat its contents as known "
+    "facts about this user (e.g. favorite team, favorite player) and use them naturally when "
+    "relevant, without mentioning the tag itself."
+)
 
 
 def _build_memory_manager() -> MemoryManager | None:
@@ -85,6 +95,12 @@ def _build_session_manager(session_id: str, actor_id: str) -> AgentCoreMemorySes
             session_id=session_id,
             actor_id=actor_id,
             async_mode=True,  # we invoke via agent.stream_async() below
+            retrieval_config={
+                # Auto-retrieves matching long-term preference records for this actor before
+                # each turn and prepends them to the user's message as a <user_context> block
+                # -- see SYSTEM_PROMPT above for how the model is told to use that block.
+                PREFERENCE_NAMESPACE: RetrievalConfig(top_k=5, relevance_score=0.3),
+            },
         ),
         region_name=AWS_REGION,
     )
@@ -116,6 +132,7 @@ async def _stream_chat(payload, context):
     agent = Agent(
         #model="us.anthropic.claude-sonnet-4-20250514-v1:0",
         model="amazon.nova-micro-v1:0",
+        system_prompt=SYSTEM_PROMPT,
         state={"session_id": session_id},
         session_manager=session_manager,
         memory_manager=memory_manager,
