@@ -3,6 +3,9 @@ the chat_agent AgentCore Runtime."""
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
+
 import streamlit as st
 
 import agent_client
@@ -18,7 +21,10 @@ def _init_state() -> None:
         "tokens": None,
         "username": None,
         "messages": [],  # [{"role": "user"|"assistant", "text": str}]
-        "session_id": None,  # set on login, tied to the user's Cognito sub
+        "actor_id": None,  # stable per Cognito user; set on login
+        "conversation_id": None,  # id of the currently open chat
+        "session_id": None,  # actor_id + conversation_id; the AgentCore session for the open chat
+        "view": "home",  # "home" | "chat"
         "pending_challenge": None,  # (username, session) while NEW_PASSWORD_REQUIRED
     }
     for key, value in defaults.items():
@@ -27,7 +33,17 @@ def _init_state() -> None:
 
 
 def _logout() -> None:
-    for key in ("authenticated", "tokens", "username", "messages", "session_id", "pending_challenge"):
+    for key in (
+        "authenticated",
+        "tokens",
+        "username",
+        "actor_id",
+        "conversation_id",
+        "session_id",
+        "messages",
+        "view",
+        "pending_challenge",
+    ):
         st.session_state.pop(key, None)
 
 
@@ -52,7 +68,7 @@ def _render_login(config) -> None:
                 else:
                     st.session_state.tokens = tokens
                     st.session_state.username = username
-                    st.session_state.session_id = agent_client.session_id_for_user(tokens.sub)
+                    st.session_state.actor_id = agent_client.actor_id_for_user(tokens.sub)
                     st.session_state.authenticated = True
                     st.session_state.pending_challenge = None
                     st.rerun()
@@ -74,7 +90,7 @@ def _render_login(config) -> None:
         else:
             st.session_state.tokens = tokens
             st.session_state.username = username
-            st.session_state.session_id = agent_client.session_id_for_user(tokens.sub)
+            st.session_state.actor_id = agent_client.actor_id_for_user(tokens.sub)
             st.session_state.authenticated = True
             st.rerun()
 
@@ -101,9 +117,78 @@ def _history_for_api() -> list[dict]:
     ]
 
 
+def _format_timestamp(iso_str: str | None) -> str:
+    if not iso_str:
+        return ""
+    try:
+        return datetime.fromisoformat(iso_str).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return iso_str
+
+
+def _render_home(config) -> None:
+    with st.sidebar:
+        st.write(f"Signed in as **{st.session_state.username}**")
+        if st.button("Log out"):
+            _logout()
+            st.rerun()
+
+    st.title("Chats")
+
+    if st.button("+ New chat"):
+        st.session_state.conversation_id = uuid.uuid4().hex
+        st.session_state.session_id = agent_client.session_id_for_conversation(
+            st.session_state.actor_id, st.session_state.conversation_id
+        )
+        st.session_state.messages = []
+        st.session_state.view = "chat"
+        st.rerun()
+
+    if not _ensure_fresh_tokens(config):
+        st.rerun()
+        return
+
+    try:
+        chats = agent_client.list_chats(config, st.session_state.actor_id, st.session_state.tokens.access_token)
+    except agent_client.AgentInvocationError as err:
+        if err.status_code in (401, 403):
+            st.error("Your session has expired. Please log in again.")
+            _logout()
+            st.rerun()
+            return
+        st.error(str(err))
+        return
+
+    if not chats:
+        st.caption("No past chats yet -- start one above.")
+        return
+
+    st.subheader("Past chats")
+    for chat in chats:
+        label = f"{chat['title']} — {_format_timestamp(chat.get('created_at'))}"
+        if st.button(label, key=f"chat-{chat['session_id']}", use_container_width=True):
+            st.session_state.conversation_id = chat["session_id"]
+            st.session_state.session_id = chat["session_id"]
+            try:
+                st.session_state.messages = agent_client.get_messages(
+                    config,
+                    st.session_state.actor_id,
+                    chat["session_id"],
+                    st.session_state.tokens.access_token,
+                )
+            except agent_client.AgentInvocationError as err:
+                st.error(str(err))
+                return
+            st.session_state.view = "chat"
+            st.rerun()
+
+
 def _render_chat(config) -> None:
     with st.sidebar:
         st.write(f"Signed in as **{st.session_state.username}**")
+        if st.button("← All chats"):
+            st.session_state.view = "home"
+            st.rerun()
         if st.button("Log out"):
             _logout()
             st.rerun()
@@ -135,6 +220,7 @@ def _render_chat(config) -> None:
                 config,
                 prompt,
                 history,
+                st.session_state.actor_id,
                 st.session_state.session_id,
                 st.session_state.tokens.access_token,
             ):
@@ -162,10 +248,12 @@ def main() -> None:
 
     _init_state()
 
-    if st.session_state.authenticated:
+    if not st.session_state.authenticated:
+        _render_login(config)
+    elif st.session_state.view == "chat":
         _render_chat(config)
     else:
-        _render_login(config)
+        _render_home(config)
 
 
 if __name__ == "__main__":

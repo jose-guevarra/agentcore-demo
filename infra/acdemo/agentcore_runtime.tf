@@ -172,7 +172,8 @@ resource "aws_iam_policy" "agentcore_runtime_execution_policy" {
           "bedrock-agentcore:CreateEvent",
           "bedrock-agentcore:ListEvents",
           "bedrock-agentcore:GetEvent",
-          "bedrock-agentcore:DeleteEvent"
+          "bedrock-agentcore:DeleteEvent",
+          "bedrock-agentcore:ListSessions"
         ]
         Effect   = "Allow"
         Resource = [aws_bedrockagentcore_memory.chat_memory.arn]
