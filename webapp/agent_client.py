@@ -140,7 +140,18 @@ def _post_json(config: Config, headers: dict, body: dict) -> dict:
             f"Agent invocation failed ({response.status_code}): {response.text[:500]}",
             status_code=response.status_code,
         )
-    return response.json()
+    try:
+        return response.json()
+    except ValueError as err:
+        # A 200 with a non-JSON body (e.g. an SSE stream) means the runtime doesn't
+        # recognize this action -- most likely it's running an older chat_agent
+        # build that predates it and fell through to the default chat/streaming
+        # path instead. Surface that as a normal in-app error rather than crashing.
+        raise AgentInvocationError(
+            "The agent returned an unexpected response for this request. "
+            "It may be running an older version that doesn't support this feature yet "
+            f"(response started with: {response.text[:200]!r})."
+        ) from err
 
 
 def list_chats(config: Config, actor_id: str, access_token: str) -> list[dict]:

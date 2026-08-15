@@ -99,6 +99,17 @@ async def _stream_chat(payload, context):
     # conversation from before multi-chat where the two coincided).
     actor_id = payload.get("actor_id") or session_id
     user_message = payload.get("prompt", "")
+    if not user_message.strip():
+        # Bedrock's Converse API rejects a blank ContentBlock.text outright, and
+        # -- worse -- if a session_manager is attached, stream_async would still
+        # persist the blank turn into AgentCore Memory first. That permanently
+        # corrupts the conversation: every future turn fails the same
+        # ValidationException on replay, since the session manager restores full
+        # history (blank turn included) before every request. Reject up front
+        # instead, in the same {"error": ...} shape agent_client.stream_chat()
+        # already knows how to surface.
+        yield {"error": "empty_prompt", "message": "Message text cannot be empty."}
+        return
     session_manager = _build_session_manager(session_id, actor_id)
 
     agent = Agent(
