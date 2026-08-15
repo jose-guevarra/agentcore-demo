@@ -1,11 +1,14 @@
 import os
+from datetime import datetime
+from datetime import timezone as tzinfo
+from zoneinfo import ZoneInfo
 
 from bedrock_agentcore.memory import MemorySessionManager
 from bedrock_agentcore.memory.integrations.strands.bedrock_converter import AgentCoreMemoryConverter
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig, RetrievalConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
-from strands import Agent
+from strands import Agent, tool
 from strands.memory import MemoryManager
 from strands.vended_memory_stores.bedrock_knowledge_base import BedrockKnowledgeBaseStore
 
@@ -24,8 +27,27 @@ PREFERENCE_NAMESPACE = "/preferences/{actorId}/"
 SYSTEM_PROMPT = (
     "If the user's message is preceded by a <user_context> block, treat its contents as known "
     "facts about this user (e.g. favorite team, favorite player) and use them naturally when "
-    "relevant, without mentioning the tag itself."
+    "relevant, without mentioning the tag itself. Use the get_current_time tool whenever you "
+    "need today's date or the current time -- don't guess or rely on training data for it."
 )
+
+
+@tool
+def get_current_time(timezone: str = "UTC") -> str:
+    """Get the current date and time.
+
+    Args:
+        timezone: IANA timezone name (e.g. "UTC", "US/Pacific", "Europe/London",
+            "Asia/Tokyo"). Defaults to UTC.
+
+    Returns:
+        The current date and time in ISO 8601 format, e.g. "2026-08-15T14:32:16-07:00".
+    """
+    try:
+        tz = tzinfo.utc if timezone.upper() == "UTC" else ZoneInfo(timezone)
+    except Exception as e:
+        raise ValueError(f"Unknown timezone {timezone!r}: {e}") from e
+    return datetime.now(tz).isoformat(timespec="seconds")
 
 
 def _build_memory_manager() -> MemoryManager | None:
@@ -133,6 +155,7 @@ async def _stream_chat(payload, context):
         #model="us.anthropic.claude-sonnet-4-20250514-v1:0",
         model="amazon.nova-micro-v1:0",
         system_prompt=SYSTEM_PROMPT,
+        tools=[get_current_time],
         state={"session_id": session_id},
         session_manager=session_manager,
         memory_manager=memory_manager,
