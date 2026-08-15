@@ -168,3 +168,26 @@ resource "aws_lambda_function" "feed_ingest_scheduler" {
     }
   }
 }
+
+# --------------------------------------------------------------------------
+# EventBridge schedule -- fires feed_ingest_scheduler every 6 hours
+# --------------------------------------------------------------------------
+
+resource "aws_cloudwatch_event_rule" "feed_ingest_scheduler_schedule" {
+  name                = "${local.feed_ingest_scheduler_function_name}-schedule"
+  description         = "Triggers ${local.feed_ingest_scheduler_function_name} every 6 hours"
+  schedule_expression = "rate(6 hours)"
+}
+
+resource "aws_cloudwatch_event_target" "feed_ingest_scheduler_target" {
+  rule = aws_cloudwatch_event_rule.feed_ingest_scheduler_schedule.name
+  arn  = aws_lambda_function.feed_ingest_scheduler.arn
+}
+
+resource "aws_lambda_permission" "feed_ingest_scheduler_allow_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.feed_ingest_scheduler.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.feed_ingest_scheduler_schedule.arn
+}
