@@ -14,6 +14,10 @@ output "knowledge_base_id" {
   value = aws_bedrockagent_knowledge_base.knowledge_base.id
 }
 
+output "memory_id" {
+  value = aws_bedrockagentcore_memory.chat_memory.id
+}
+
 output "bedrock_data_source_id" {
   value = awscc_bedrock_data_source.s3_data_source.data_source_id
 }
