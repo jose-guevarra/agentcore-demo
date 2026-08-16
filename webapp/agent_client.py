@@ -198,3 +198,18 @@ def get_messages(config: Config, actor_id: str, session_id: str, access_token: s
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
     }
     return _post_json(config, headers, {"action": "list_messages", "actor_id": actor_id}).get("messages", [])
+
+
+def get_debug_info(config: Config, actor_id: str, access_token: str) -> dict:
+    """Backing data for the webapp's Debug page.
+
+    {"long_term_memory": [{"text": str, "created_at": iso str | None}]}.
+    """
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        # Same reasoning as list_chats' header above -- this is a stateless
+        # read keyed by actor_id, not tied to any one conversation session.
+        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": f"{actor_id}-debug-{uuid.uuid4().hex}",
+    }
+    return _post_json(config, headers, {"action": "debug_info", "actor_id": actor_id})

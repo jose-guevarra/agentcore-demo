@@ -306,6 +306,37 @@ async def _list_sessions(payload) -> dict:
     return {"sessions": sessions}
 
 
+def _long_term_memory(manager: MemorySessionManager | None, actor_id: str) -> list[dict]:
+    """This actor's durable USER_PREFERENCE records (see PREFERENCE_NAMESPACE),
+    for the webapp's Debug page. Plain list, not the semantic search
+    RetrieveMemoryRecords does at chat time via retrieval_config above.
+    """
+    if manager is None or not actor_id:
+        return []
+
+    records = manager.list_long_term_memory_records(
+        namespace=PREFERENCE_NAMESPACE.format(actorId=actor_id), max_results=100
+    )
+    memories = []
+    for record in records:
+        content = record.get("content") or {}
+        created_at = record.get("createdAt")
+        memories.append(
+            {
+                "text": content.get("text", ""),
+                "created_at": created_at.isoformat() if created_at else None,
+            }
+        )
+    return memories
+
+
+async def _debug_info(payload) -> dict:
+    """Backing data for the webapp's Debug page."""
+    actor_id = payload.get("actor_id", "")
+    manager = _memory_session_manager()
+    return {"long_term_memory": _long_term_memory(manager, actor_id)}
+
+
 async def _list_messages(payload, context) -> dict:
     """Full transcript of one past conversation, chronological."""
     actor_id = payload.get("actor_id", "")
@@ -341,6 +372,8 @@ async def invoke(payload, context):
         return await _list_sessions(payload)
     if action == "list_messages":
         return await _list_messages(payload, context)
+    if action == "debug_info":
+        return await _debug_info(payload)
     return _stream_chat(payload, context)  # NOT awaited -- see docstring
 
 

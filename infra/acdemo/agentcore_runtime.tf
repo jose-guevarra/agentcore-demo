@@ -174,7 +174,10 @@ resource "aws_iam_policy" "agentcore_runtime_execution_policy" {
           "bedrock-agentcore:GetEvent",
           "bedrock-agentcore:DeleteEvent",
           "bedrock-agentcore:ListSessions",
-          "bedrock-agentcore:RetrieveMemoryRecords"
+          "bedrock-agentcore:RetrieveMemoryRecords",
+          # For the webapp's Debug page: list_long_term_memory_records (a plain
+          # list, unlike RetrieveMemoryRecords' semantic search) needs this.
+          "bedrock-agentcore:ListMemoryRecords"
         ]
         Effect   = "Allow"
         Resource = [aws_bedrockagentcore_memory.chat_memory.arn]

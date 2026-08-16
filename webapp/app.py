@@ -24,7 +24,7 @@ def _init_state() -> None:
         "actor_id": None,  # stable per Cognito user; set on login
         "conversation_id": None,  # id of the currently open chat
         "session_id": None,  # actor_id + conversation_id; the AgentCore session for the open chat
-        "view": "home",  # "home" | "chat"
+        "view": "home",  # "home" | "chat" | "debug"
         "pending_challenge": None,  # (username, session) while NEW_PASSWORD_REQUIRED
     }
     for key, value in defaults.items():
@@ -126,23 +126,33 @@ def _format_timestamp(iso_str: str | None) -> str:
         return iso_str
 
 
-def _render_home(config) -> None:
+def _render_sidebar(config) -> None:
+    """Nav shared by every authenticated view: Home / New Chat / Debug / Log out."""
     with st.sidebar:
         st.write(f"Signed in as **{st.session_state.username}**")
-        if st.button("Log out"):
+        if st.button("Home", use_container_width=True):
+            st.session_state.view = "home"
+            st.rerun()
+        if st.button("New Chat", use_container_width=True):
+            st.session_state.conversation_id = uuid.uuid4().hex
+            st.session_state.session_id = agent_client.session_id_for_conversation(
+                st.session_state.actor_id, st.session_state.conversation_id
+            )
+            st.session_state.messages = []
+            st.session_state.view = "chat"
+            st.rerun()
+        if st.button("Debug", use_container_width=True):
+            st.session_state.view = "debug"
+            st.rerun()
+        if st.button("Log out", use_container_width=True):
             _logout()
             st.rerun()
 
-    st.title("Chats")
 
-    if st.button("+ New chat"):
-        st.session_state.conversation_id = uuid.uuid4().hex
-        st.session_state.session_id = agent_client.session_id_for_conversation(
-            st.session_state.actor_id, st.session_state.conversation_id
-        )
-        st.session_state.messages = []
-        st.session_state.view = "chat"
-        st.rerun()
+def _render_home(config) -> None:
+    _render_sidebar(config)
+
+    st.title("Chats")
 
     if not _ensure_fresh_tokens(config):
         st.rerun()
@@ -184,14 +194,7 @@ def _render_home(config) -> None:
 
 
 def _render_chat(config) -> None:
-    with st.sidebar:
-        st.write(f"Signed in as **{st.session_state.username}**")
-        if st.button("← All chats"):
-            st.session_state.view = "home"
-            st.rerun()
-        if st.button("Log out"):
-            _logout()
-            st.rerun()
+    _render_sidebar(config)
 
     st.title("Chat")
 
@@ -239,6 +242,41 @@ def _render_chat(config) -> None:
     st.session_state.messages.append({"role": "assistant", "text": reply})
 
 
+def _render_debug(config) -> None:
+    _render_sidebar(config)
+
+    st.title("Debug")
+
+    st.subheader("User")
+    st.write(f"**sub:** `{st.session_state.tokens.sub}`")
+    st.write(f"**actor_id:** `{st.session_state.actor_id}`")
+
+    if not _ensure_fresh_tokens(config):
+        st.rerun()
+        return
+
+    try:
+        debug_info = agent_client.get_debug_info(
+            config, st.session_state.actor_id, st.session_state.tokens.access_token
+        )
+    except agent_client.AgentInvocationError as err:
+        if err.status_code in (401, 403):
+            st.error("Your session has expired. Please log in again.")
+            _logout()
+            st.rerun()
+            return
+        st.error(str(err))
+        return
+
+    st.subheader("Long-term memory")
+    memories = debug_info.get("long_term_memory", [])
+    if not memories:
+        st.caption("No long-term memory records yet.")
+    else:
+        for memory in memories:
+            st.write(f"- {memory['text']} _( {_format_timestamp(memory.get('created_at'))} )_")
+
+
 def main() -> None:
     try:
         config = load_config()
@@ -252,6 +290,8 @@ def main() -> None:
         _render_login(config)
     elif st.session_state.view == "chat":
         _render_chat(config)
+    elif st.session_state.view == "debug":
+        _render_debug(config)
     else:
         _render_home(config)
 
