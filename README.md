@@ -109,6 +109,13 @@ The two tiers differ in retention (7 days vs. indefinite), retrieval style (line
 
 The knowledge base is intentionally narrow in scope — "team RSS feed articles ingested by feed_ingest" — not a general-purpose document store.
 
+**Retrieval scope, filtering, and size limits:**
+
+- **Chunk-level top-K, not whole documents.** Articles are split into ~300-token semantic chunks at ingestion time and embedded individually, so retrieval works at the chunk granularity, not the article granularity. Each turn, `Retrieve` returns at most the top **10** most similar chunks (`BedrockKnowledgeBaseStore`'s default `max_search_results`, left unconfigured in `chat_agent.py`), and the `MemoryManager` injection layer further caps what actually reaches the model at **5** entries (also its unconfigured default). So a turn sees at most 5 short passages — never a full article, and never the whole knowledge base.
+- **The retrieval query is exactly one message, not the conversation.** The injected query is derived adaptively from `agent.messages`: the single most recent message matching the current turn's role (normally the latest user message's text) — never a concatenation or summary of prior turns, even though the full history is present via short-term memory.
+- **Filtering is supported but not currently applied.** `feed_ingest.py` stamps five metadata attributes on every document it writes — `team_name` and `title` (both also embedded for semantic matching), plus filter-only `source`, `published_date`, and `url`. `BedrockKnowledgeBaseStore` accepts a `filter` (or `scope`/`scope_metadata_key`) config that becomes a metadata-equals filter on the `Retrieve` call — e.g. scoping results to one team — but `chat_agent.py` sets neither today, so every query searches across all teams' articles, ranked purely by semantic similarity.
+- **Size limits worth knowing:** `feed_ingest` caps each run at the 10 newest entries per feed within a 48-hour lookback window; article text is truncated to 12,000 characters before being sent to `nova-lite` for classification; and the S3 `.metadata.json` sidecar is capped at Bedrock's observed 1024-byte limit (the `title`/`url` attributes are defensively truncated to stay under it).
+
 ## How the agent's per-turn context is constructed
 
 Memory and RAG above aren't independent features — they're both assembled into a single model call each turn, alongside tool definitions. In order:
