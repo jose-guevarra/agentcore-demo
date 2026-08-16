@@ -8,5 +8,5 @@ curl -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -H "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: ${SESSION_ID}" \
-  -d '{"prompt": "What can you do?", "conversation_history": []}'
+  -d "{\"prompt\": \"What can you do?\", \"conversation_history\": [], \"access_token\": \"${TOKEN}\"}"
 

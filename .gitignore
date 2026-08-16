@@ -7,6 +7,9 @@ src/feed_ingest/feed_ingest_scheduler.zip
 
 src/feed_ingest/dist_scheduler
 
+src/weather_tool/dist
+src/weather_tool/weather_tool.zip
+
 tools/.env.*
 
 .DS_Store

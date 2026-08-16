@@ -27,9 +27,21 @@ feed_ingest_scheduler_test:
 	uv run --project feed_ingest pytest ../tests/test_feed_ingest_scheduler.py -v -s
 
 
+weather_tool_dist:
+	mkdir -p weather_tool/dist
+	cp weather_tool/weather_tool.py weather_tool/dist/
+	cd weather_tool/dist/ && zip -r ../weather_tool.zip .
+
+
+weather_tool_test:
+	uv run --project .. pytest ../tests/test_weather_tool.py -v -s
+
+
 clean_all:
 	rm -rf chat_agent/requirements.txt
 	rm -rf feed_ingest/dist
 	rm -rf feed_ingest/dist_scheduler
 	rm -f feed_ingest/feed_ingest.zip
 	rm -f feed_ingest/feed_ingest_scheduler.zip
+	rm -rf weather_tool/dist
+	rm -f weather_tool/weather_tool.zip

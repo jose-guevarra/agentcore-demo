@@ -218,6 +218,10 @@ resource "aws_bedrockagentcore_agent_runtime" "agentcore_runtime" {
   environment_variables = {
     BEDROCK_KNOWLEDGE_BASE_ID = aws_bedrockagent_knowledge_base.knowledge_base.id
     BEDROCK_MEMORY_ID         = aws_bedrockagentcore_memory.chat_memory.id
+    # chat_agent.py forwards the caller's own bearer token to this URL -- see
+    # gateway.tf's custom_jwt_authorizer, which trusts the same Cognito
+    # pool/client as this Runtime's own authorizer_configuration below.
+    WEATHER_GATEWAY_URL = aws_bedrockagentcore_gateway.weather_gateway.gateway_url
   }
 
   # Both fields are set explicitly (rather than only max_lifetime) to avoid a

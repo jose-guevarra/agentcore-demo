@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime
 from datetime import timezone as tzinfo
@@ -8,15 +9,21 @@ from bedrock_agentcore.memory.integrations.strands.bedrock_converter import Agen
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig, RetrievalConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from mcp.client.streamable_http import streamablehttp_client
 from strands import Agent, tool
 from strands.memory import MemoryManager
+from strands.tools.mcp import MCPAgentTool, MCPClient
 from strands.vended_memory_stores.bedrock_knowledge_base import BedrockKnowledgeBaseStore
 
 app = BedrockAgentCoreApp()
+logger = logging.getLogger(__name__)
 
 # Both provisioned by infra/acdemo/agentcore_runtime.tf as runtime environment variables.
 KNOWLEDGE_BASE_ID = os.environ.get("BEDROCK_KNOWLEDGE_BASE_ID")
 MEMORY_ID = os.environ.get("BEDROCK_MEMORY_ID")
+# The get_weather MCP tool's Gateway URL -- see infra/acdemo/gateway.tf. Also
+# runtime-provisioned; unset locally, which just means no weather tool.
+WEATHER_GATEWAY_URL = os.environ.get("WEATHER_GATEWAY_URL")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 TITLE_MAX_CHARS = 60
 
@@ -28,7 +35,9 @@ SYSTEM_PROMPT = (
     "If the user's message is preceded by a <user_context> block, treat its contents as known "
     "facts about this user (e.g. favorite team, favorite player) and use them naturally when "
     "relevant, without mentioning the tag itself. Use the get_current_time tool whenever you "
-    "need today's date or the current time -- don't guess or rely on training data for it."
+    "need today's date or the current time -- don't guess or rely on training data for it. "
+    "Use your weather-lookup tool whenever asked about current weather in a city -- don't "
+    "guess or rely on training data for it. If no weather tool is available, say so."
 )
 
 
@@ -128,6 +137,42 @@ def _build_session_manager(session_id: str, actor_id: str) -> AgentCoreMemorySes
     )
 
 
+def _weather_mcp_client(payload) -> MCPClient | None:
+    """MCP client for the weather Gateway, authenticated as the caller.
+
+    Forwards the same bearer token the caller used to invoke this Runtime --
+    infra/acdemo/gateway.tf's Gateway trusts the identical Cognito pool/client
+    as the Runtime's own custom_jwt_authorizer (agentcore_runtime.tf), so no
+    separate credential is minted here.
+
+    Read from `payload["access_token"]`, not the request's Authorization
+    header: confirmed empirically (CloudWatch logs showed request_headers
+    containing only OTel baggage) that the managed Runtime front door
+    consumes the inbound Authorization header for its own JWT validation and
+    does not forward it into the container. The body is the reliable path --
+    see webapp/agent_client.py's stream_chat and tools/test_agent.sh, both of
+    which send the same access token twice: once as the header (for the
+    Runtime's own authorizer) and once in the body (for this).
+
+    Returns None if the Gateway isn't configured or the caller sent no
+    access_token (e.g. local/dev invocation, or an older client), in which
+    case get_weather just won't be in the agent's tool list for this turn --
+    logged either way, since silently dropping the tool is otherwise
+    indistinguishable from the model just not calling it.
+    """
+    if not WEATHER_GATEWAY_URL:
+        logger.info("WEATHER_GATEWAY_URL is not set -- get_weather won't be offered this turn")
+        return None
+    access_token = payload.get("access_token")
+    if not access_token:
+        logger.warning(
+            "WEATHER_GATEWAY_URL is set but this request's payload carried no access_token "
+            "-- get_weather won't be offered this turn"
+        )
+        return None
+    return MCPClient(lambda: streamablehttp_client(WEATHER_GATEWAY_URL, headers={"Authorization": f"Bearer {access_token}"}))
+
+
 async def _stream_chat(payload, context):
     """Stream a chat reply. Split out of invoke() so invoke() itself stays a
     plain (non-generator) async function -- see invoke()'s docstring.
@@ -151,23 +196,55 @@ async def _stream_chat(payload, context):
         return
     session_manager = _build_session_manager(session_id, actor_id)
 
-    agent = Agent(
-        #model="us.anthropic.claude-sonnet-4-20250514-v1:0",
-        model="amazon.nova-micro-v1:0",
-        system_prompt=SYSTEM_PROMPT,
-        tools=[get_current_time],
-        state={"session_id": session_id},
-        session_manager=session_manager,
-        memory_manager=memory_manager,
-        # When memory is configured, session_manager's initialize() hook restores
-        # the full prior conversation into agent.messages -- passing history here
-        # too would be redundant. Fall back to the client-supplied history only
-        # when BEDROCK_MEMORY_ID isn't set, preserving prior behavior for local/dev.
-        messages=None if session_manager else payload.get("conversation_history", []),
-    )
+    # mcp_client stays None (and weather_tools empty) whenever the Gateway isn't
+    # configured, the caller sent no bearer token, or the connection itself fails
+    # -- logged in each case (see _weather_mcp_client and the except below), so a
+    # Gateway hiccup degrades this turn to "no weather tool" instead of failing
+    # the whole chat outright.
+    mcp_client = _weather_mcp_client(payload)
+    weather_tools = []
+    if mcp_client is not None:
+        try:
+            mcp_client.start()
+            # AgentCore Gateway names every tool "<target>___<tool>" (its own
+            # convention, e.g. "get-weather___get_weather" -- see gateway.tf's
+            # aws_bedrockagentcore_gateway_target name vs. its inline tool
+            # name). Both amazon.nova-micro-v1:0 and amazon.nova-lite-v1:0
+            # reproducibly threw modelStreamErrorException ("Model produced
+            # invalid sequence as part of ToolUse") on every call to a tool
+            # named that way, but had no trouble once given a plain name --
+            # re-wrap with one rather than exposing the Gateway's raw name.
+            weather_tools = [
+                MCPAgentTool(t.mcp_tool, t.mcp_client, name_override="get_weather")
+                for t in mcp_client.list_tools_sync()
+            ]
+            logger.info("Loaded %d tool(s) from the weather Gateway", len(weather_tools))
+        except Exception:
+            logger.exception("Could not load tools from the weather Gateway -- continuing without one")
+            mcp_client = None
 
-    async for event in agent.stream_async(user_message):
-        yield event
+    try:
+        agent = Agent(
+            #model="us.anthropic.claude-sonnet-4-20250514-v1:0",
+            #model="amazon.nova-micro-v1:0",  # unreliable MCP tool-use: modelStreamErrorException on every get_weather call
+            model="amazon.nova-lite-v1:0",
+            system_prompt=SYSTEM_PROMPT,
+            tools=[get_current_time, *weather_tools],
+            state={"session_id": session_id},
+            session_manager=session_manager,
+            memory_manager=memory_manager,
+            # When memory is configured, session_manager's initialize() hook restores
+            # the full prior conversation into agent.messages -- passing history here
+            # too would be redundant. Fall back to the client-supplied history only
+            # when BEDROCK_MEMORY_ID isn't set, preserving prior behavior for local/dev.
+            messages=None if session_manager else payload.get("conversation_history", []),
+        )
+
+        async for event in agent.stream_async(user_message):
+            yield event
+    finally:
+        if mcp_client is not None:
+            mcp_client.stop(None, None, None)
 
 
 def _text_from_message(message: dict) -> str:

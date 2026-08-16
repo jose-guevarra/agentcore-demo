@@ -90,13 +90,25 @@ def stream_chat(
     is sent so the runtime can record this chat's memory under the user's
     stable actor id rather than defaulting to (session-scoped) session_id --
     see src/chat_agent/chat_agent.py's _stream_chat.
+
+    access_token is sent twice: as the Authorization header (which the
+    Runtime's own custom_jwt_authorizer validates to authenticate this call)
+    and again in the body. The header does NOT reach chat_agent.py's code --
+    confirmed empirically, the managed front door consumes it for its own JWT
+    validation and never forwards it into the container -- so the body copy
+    is what chat_agent.py actually forwards on to the weather Gateway.
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
     }
-    body = {"prompt": prompt, "conversation_history": history, "actor_id": actor_id}
+    body = {
+        "prompt": prompt,
+        "conversation_history": history,
+        "actor_id": actor_id,
+        "access_token": access_token,
+    }
 
     try:
         response = requests.post(config.invoke_url, headers=headers, json=body, stream=True, timeout=120)

@@ -22,6 +22,14 @@ output "bedrock_data_source_id" {
   value = awscc_bedrock_data_source.s3_data_source.data_source_id
 }
 
+output "weather_gateway_id" {
+  value = aws_bedrockagentcore_gateway.weather_gateway.gateway_id
+}
+
+output "weather_gateway_url" {
+  value = aws_bedrockagentcore_gateway.weather_gateway.gateway_url
+}
+
 #output "feedback_table_name" {
 #  value = aws_dynamodb_table.feedback.name
 #}
