@@ -36,11 +36,21 @@ flowchart TB
     Ingest -- "RSS + scrape + classify\n(nova-lite)" --> S3Src[("S3\nembeddings/")]
     Scheduler -- "StartIngestionJob" --> KB
     S3Src --> KB
+
+    EventBridge2["EventBridge\n(every 6h)"] --> PGScheduler["Lambda:\npregame_report_scheduler"]
+    PGScheduler -- "reads upcoming games" --> GamesDDB[("DynamoDB\ngames")]
+    PGScheduler -- "invoke per game" --> PGReport["Lambda: pregame_report"]
+    PGReport -- "Retrieve (per team,\nfiltered by team_name)" --> KB
+    PGReport -- "synthesize report\n(nova-lite)" --> S3PG[("S3\nembeddings/pregame_reports/")]
+    PGScheduler -- "StartIngestionJob" --> KB
+    S3PG --> KB
 ```
 
 **Request path:** a user logs into the webapp via Cognito, then every chat message is POSTed to the AgentCore Runtime's HTTPS invoke endpoint with the user's bearer token. The Runtime hosts a Strands `Agent` that, each turn, replays the conversation from short-term memory, pulls in relevant long-term preferences and RAG passages, calls tools as needed, and streams the reply back over SSE.
 
 **Ingestion path (independent of chat):** every 6 hours, EventBridge triggers a scheduler Lambda that reads a table of (team, RSS feed) pairs, fetches and classifies new articles, writes them to S3, and kicks off a Bedrock Knowledge Base ingestion job — so the RAG content refreshes itself without any chat traffic.
+
+**Pregame report path (also independent of chat):** every 6 hours, a second EventBridge schedule triggers `pregame_report_scheduler`, which reads a table of upcoming games and, for each one starting soon, has `pregame_report` retrieve each team's recent knowledge-base coverage, ask `nova-lite` to synthesize a matchup report from it, and write that report to S3 under its own prefix — feeding the same Knowledge Base ingestion job as the news pipeline, so pregame reports become chat-retrievable too. See [How pregame reports work](#how-pregame-reports-work) below.
 
 ## Components
 
@@ -73,9 +83,16 @@ Two Lambdas that keep the knowledge base fresh:
 
 A small Lambda ([weather_tool.py](src/weather_tool/weather_tool.py)) that geocodes a city and fetches current conditions from the free Open-Meteo API. It isn't called directly — it's registered as a target behind an AgentCore Gateway, which exposes it to the agent as an MCP tool (`get_weather`).
 
+### `src/pregame_report/` — the pregame report pipeline
+
+Two more Lambdas, structured the same way as `src/feed_ingest/`, that generate and refresh matchup reports for upcoming games:
+
+- [pregame_report.py](src/pregame_report/pregame_report.py) — given one game (visiting team, home team, kickoff time): retrieves each team's recent Knowledge Base coverage (filtered by the same `team_name` metadata attribute `feed_ingest.py` stamps), asks Bedrock (`nova-lite`) to synthesize a markdown report from it (team snapshots, key player matchups, offense/defense breakdown, notable injuries, outlook), and writes it to `s3://<source-bucket>/embeddings/pregame_reports/` — a prefix separate from `feed_ingest.py`'s own, so pregame reports stay distinguishable from regular news articles even though both feed the same Knowledge Base. Grounded strictly in retrieved content: the synthesis prompt is told not to invent injury/roster specifics the retrieved excerpts don't support. Writes to a deterministic S3 key per game, so re-running overwrites the prior report with fresher news rather than accumulating duplicates.
+- [pregame_report_scheduler.py](src/pregame_report/pregame_report_scheduler.py) — reads every row of the `games` DynamoDB table, selects the ones kicking off within a lookahead window (`PREGAME_LOOKAHEAD_DAYS`, default 5 days), invokes `pregame_report` once per selected game, and — if any documents were written — calls `bedrock:StartIngestionJob` to re-index the Knowledge Base. Triggered every 6 hours by its own EventBridge rule.
+
 ### `infra/acdemo/` — Terraform stack
 
-Provisions everything above: ECR + IAM for the Runtime, the AgentCore Memory resource + memory strategy, the AgentCore Runtime itself, the Bedrock Knowledge Base + S3 Vectors index, the `feedsources` DynamoDB table, the AgentCore Gateway + Lambda target, the Cognito user pool/client, all three Lambdas, and the EventBridge schedule. See the [Setup](#setup--deployment) section below for how to apply it.
+Provisions everything above: ECR + IAM for the Runtime, the AgentCore Memory resource + memory strategy, the AgentCore Runtime itself, the Bedrock Knowledge Base + S3 Vectors index, the `feedsources` and `games` DynamoDB tables, the AgentCore Gateway + Lambda target, the Cognito user pool/client, all five Lambdas, and the two EventBridge schedules. See the [Setup](#setup--deployment) section below for how to apply it.
 
 ### `tools/` — operational scripts
 
@@ -116,6 +133,16 @@ The knowledge base is intentionally narrow in scope — "team RSS feed articles 
 - **Filtering is supported but not currently applied.** `feed_ingest.py` stamps five metadata attributes on every document it writes — `team_name` and `title` (both also embedded for semantic matching), plus filter-only `source`, `published_date`, and `url`. `BedrockKnowledgeBaseStore` accepts a `filter` (or `scope`/`scope_metadata_key`) config that becomes a metadata-equals filter on the `Retrieve` call — e.g. scoping results to one team — but `chat_agent.py` sets neither today, so every query searches across all teams' articles, ranked purely by semantic similarity.
 - **Size limits worth knowing:** `feed_ingest` caps each run at the 10 newest entries per feed within a 48-hour lookback window; article text is truncated to 12,000 characters before being sent to `nova-lite` for classification; and the S3 `.metadata.json` sidecar is capped at Bedrock's observed 1024-byte limit (the `title`/`url` attributes are defensively truncated to stay under it).
 
+## How pregame reports work
+
+**Game source:** the `games` DynamoDB table, one row per game, keyed by a partition key `gameId` formatted `{year}#{weekType}#{weekNumber}#{VISITING}@{HOME}` (e.g. `2026#PRESEASONWEEK#2#49ers@Chargers` — the `VISITING`/`HOME` shorthand's casing isn't significant) and a sort key `gameTime` (ISO-8601 UTC, e.g. `2026-08-21T02:00:00Z`). `pregame_report_scheduler.py`'s `parse_game_id()` parses `visiting_team`/`home_team` straight out of `gameId` — normalizing the shorthand to the title-cased team name `feed_ingest`/`feedsources` rows use for that team (e.g. `"49ers"`, `"Chargers"`) via `.capitalize()`, which is correct for every NFL nickname regardless of the shorthand's input casing — so rows need no separate `visiting_team`/`home_team` attribute; one can still be set explicitly on a row to override the parsed value (e.g. if a team's shorthand and Knowledge Base casing ever diverge).
+
+**Scheduling (offline, independent of chat traffic):** every 6 hours EventBridge triggers `pregame_report_scheduler`, which scans the `games` table and keeps only the rows whose `gameTime` falls within `PREGAME_LOOKAHEAD_DAYS` (default 5) from now — far-off games are skipped (no fresh news to report on yet), and past games drop out of the window naturally, with no cleanup step required.
+
+**Per-game retrieval + synthesis:** for each selected game, `pregame_report` calls `bedrock-agent-runtime`'s `Retrieve` directly (the same call `BedrockKnowledgeBaseStore.search()` wraps in `chat_agent.py`, but invoked standalone here since this Lambda has no Strands `Agent`), once per team, each filtered to `team_name` equals that team — reusing the metadata attribute `feed_ingest.py` already stamps on every article but that `chat_agent.py` never filters by (see [How RAG works](#how-rag-works) above). The two teams' retrieved excerpts are then handed to one `amazon.nova-lite-v1:0` `converse` call, prompted to write a markdown report covering both teams' recent form, key player matchups, the offense/defense matchup, and notable injuries — explicitly instructed to ground every factual claim in the retrieved excerpts and say so plainly when coverage is thin, rather than inventing injury/roster specifics.
+
+**Write-back into the same Knowledge Base, under a separate key:** the report is written to `s3://<source-bucket>/embeddings/pregame_reports/<slugified game id>.md` — a prefix separate from `feed_ingest.py`'s own `embeddings/<team_slug>/` — with a metadata sidecar carrying embedded `visiting_team`/`home_team` attributes (so a semantic query naming either team can surface the report) plus a non-embedded `doc_type: "pregame_report"` attribute for filtering it apart from regular news articles. The S3 key is deterministic per game, so re-running for the same game **overwrites** the prior report rather than accumulating duplicates — each scheduler run refreshes it with whatever news has landed since. Once at least one report is written, the scheduler calls the same `bedrock:StartIngestionJob` the news pipeline uses, so pregame reports become chat-retrievable through the exact same RAG path described above — no chat-side code change was needed for this.
+
 ## How the agent's per-turn context is constructed
 
 Memory and RAG above aren't independent features — they're both assembled into a single model call each turn, alongside tool definitions. In order:
@@ -153,7 +180,7 @@ A single Cognito user pool/client is used three ways: the webapp authenticates e
    ```sh
    uv run streamlit run webapp/app.py
    ```
-6. **Build/test Lambdas**: `src/Makefile` has `*_dist` targets to package each Lambda as a zip (`feed_ingest_dist`, `feed_ingest_scheduler_dist`, `weather_tool_dist`) and matching `*_test` targets to run `pytest` against `tests/`.
+6. **Build/test Lambdas**: `src/Makefile` has `*_dist` targets to package each Lambda as a zip (`feed_ingest_dist`, `feed_ingest_scheduler_dist`, `weather_tool_dist`, `pregame_report_dist`, `pregame_report_scheduler_dist`) and matching `*_test` targets to run `pytest` against `tests/`.
 7. **Operational scripts**: see the [tools/](#tools--operational-scripts) table above for flushing memory and smoke-testing the agent directly.
 
 ## Repo layout
@@ -162,6 +189,7 @@ A single Cognito user pool/client is used three ways: the webapp authenticates e
 src/chat_agent/     the agent (Strands Agent + BedrockAgentCoreApp), deployed as a container
 src/feed_ingest/    RSS → S3 ingestion pipeline feeding the RAG knowledge base
 src/weather_tool/   Lambda backing the get_weather MCP tool
+src/pregame_report/ scheduled pipeline generating/refreshing pregame matchup reports
 webapp/             Streamlit chat UI + Cognito auth
 infra/acdemo/       Terraform: Runtime, Memory, Knowledge Base, Gateway, Cognito, Lambdas, DynamoDB
 tools/              Shell scripts for testing the agent and flushing memory
