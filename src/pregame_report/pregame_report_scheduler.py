@@ -28,7 +28,7 @@ bedrock_agent_client = boto3.client("bedrock-agent", region_name=REGION)
 
 GAMES_TABLE = "games"
 PREGAME_REPORT_FUNCTION = "pregame-report"
-LOOKAHEAD_DAYS = 5  # only build/refresh reports for games starting within this many days
+LOOKAHEAD_DAYS = 1  # only build/refresh reports for games starting within this many days
 
 # Per-row overrides forwarded to pregame_report.py. week_type/week_number/year fall
 # back to gameId's parsed value (see parse_game_id) when absent from the row; a
